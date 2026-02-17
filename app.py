@@ -299,7 +299,7 @@ def main():
         st.markdown("*Didukung oleh TensorFlow & Streamlit*")
 
     # ==================== HALAMAN: BERANDA & PREDIKSI ====================
-    if halaman == "🏠 Beranda & Prediksi":
+    if halaman == "🏠 Beranda":
         st.markdown("## 📤 Unggah Tanda Tangan untuk Prediksi")
 
         tab1, tab2 = st.tabs(["📄 Unggah Tunggal", "📦 Unggah Batch"])
@@ -464,7 +464,7 @@ def main():
                         st.error("❌ File model atau label map tidak ditemukan")
 
     # ==================== HALAMAN: STATISTIK & RIWAYAT ====================
-    elif halaman == "📊 Statistik & Riwayat":
+    elif halaman == "📊 Statistik":
         st.markdown("## 📊 Statistik & Riwayat Prediksi")
 
         if 'riwayat_prediksi' not in st.session_state or len(st.session_state.riwayat_prediksi) == 0:
