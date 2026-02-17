@@ -1,0 +1,27 @@
+# Streamlit App Dependencies
+# BSI Signature Detection System
+
+# Core
+streamlit==1.32.0
+tensorflow==2.16.1
+keras==3.0.5
+
+# Image Processing
+Pillow==10.2.0
+opencv-python-headless==4.9.0.80
+
+# Data Science
+numpy==1.26.4
+pandas==2.2.1
+
+# Visualization
+plotly==5.19.0
+matplotlib==3.8.3
+seaborn==0.13.2
+
+# Utilities
+python-dateutil==2.9.0
+
+# Optional (for deployment)
+# gunicorn==21.2.0  # For production deployment
+# watchdog==4.0.0   # For auto-reload in development
