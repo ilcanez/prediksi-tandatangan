@@ -1,14 +1,14 @@
 """
-🖊️ Signature Detection System - BSI Innovation Idea
-Advanced Streamlit App dengan Multiple Features
+🖊️ Sistem Deteksi Tanda Tangan BSI
+Aplikasi Streamlit dengan Fitur Lengkap
 
-Features:
-- Single & Batch Upload
-- Top-3 Predictions dengan Confidence Visualization
-- Upload New Data & Retrain Model
-- Prediction History & Statistics
-- Export Results to CSV
-- Professional UI
+Fitur:
+- Upload Tunggal & Batch
+- Top-3 Prediksi dengan Visualisasi Kepercayaan
+- Upload Data Baru & Latih Ulang Model
+- Riwayat Prediksi & Statistik
+- Ekspor Hasil ke CSV
+- Antarmuka Profesional
 """
 
 import streamlit as st
@@ -24,26 +24,21 @@ import base64
 from pathlib import Path
 import zipfile
 import os
+import cv2  # untuk preprocessing identik dengan Tahap 1
+import tensorflow as tf  # type: ignore
 
-# ✅ FIX: Compatible imports untuk TensorFlow 2.x & Keras 3
-try:
-    import tensorflow as tf
-    import keras
-    from keras import layers, models
-except ImportError:
-    import tensorflow as tf
-    from tensorflow import keras
-    from tensorflow.keras import layers, models
+# Suppress Pylance warnings for tensorflow submodules
+keras = tf.keras  # type: ignore
 
-# Page configuration
+# Konfigurasi halaman
 st.set_page_config(
-    page_title="BSI Signature Detection",
+    page_title="Deteksi Tanda Tangan BSI",
     page_icon="🖊️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for BSI branding
+# CSS Kustom untuk branding BSI
 st.markdown("""
 <style>
     .main-header {
@@ -104,560 +99,531 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== HELPER FUNCTIONS ====================
+# ==================== FUNGSI PEMBANTU ====================
 
 @st.cache_resource
-def load_model_and_mappings(model_path, label_map_path):
-    """Load trained model and label mappings"""
+def muat_model_dan_mapping(model_path, label_map_path):
+    """Memuat model yang sudah dilatih dan pemetaan label"""
     try:
         model = tf.keras.models.load_model(model_path)
         with open(label_map_path, 'r') as f:
             label_map = json.load(f)
-            # Convert string keys to int
+            # Konversi kunci string ke int
             label_map = {int(k): v for k, v in label_map.items()}
-        
-        # Create idx_to_name mapping
+
+        # Buat mapping idx → nama
         idx_to_name = {idx: name for idx, name in label_map.items()}
-        
+
         return model, idx_to_name
     except Exception as e:
-        st.error(f"Error loading model: {str(e)}")
+        st.error(f"Gagal memuat model: {str(e)}")
         return None, None
 
-def preprocess_signature(image, target_size=(224, 224)):
+
+def preprocess_tanda_tangan(image, target_size=(224, 224)):
     """
-    Preprocess signature image untuk prediction
-    
-    Steps:
-    1. Convert to RGB if needed
-    2. Resize to target size
-    3. Convert to numpy array
-    4. Ensure [0, 255] range
-    5. Apply MobileNetV2 preprocessing
+    ⚠️ IDENTIK dengan Tahap 1 preprocess_signature():
+    1. RGBA → RGB (latar belakang putih)
+    2. Grayscale → threshold (240) → findContours → boundingRect → CROP + margin 10px
+    3. thumbnail() → pertahankan rasio → tempel di TENGAH kanvas putih 224x224
+    4. Array [0,255] → MobileNetV2 preprocess → [-1,1]
     """
-    # Convert to RGB
+    # Langkah 1: Tangani PNG transparan
     if image.mode == 'RGBA':
         background = Image.new('RGB', image.size, (255, 255, 255))
         background.paste(image, mask=image.split()[3])
         image = background
     elif image.mode != 'RGB':
         image = image.convert('RGB')
-    
-    # Resize
-    image = image.resize(target_size, Image.Resampling.LANCZOS)
-    
-    # Convert to numpy array
-    img_array = np.array(image).astype(np.float32)
-    
-    # Ensure [0, 255] range
-    if img_array.max() <= 1.0:
-        img_array = img_array * 255.0
-    
-    # Add batch dimension
-    img_array = np.expand_dims(img_array, axis=0)
-    
-    # Apply MobileNetV2 preprocessing (scales to [-1, 1])
-    img_preprocessed = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
-    
-    return img_preprocessed
 
-def predict_signature_top3(model, image, idx_to_name):
-    """Predict top-3 signatures with confidence scores"""
-    # Preprocess
-    img_preprocessed = preprocess_signature(image)
-    
-    # Predict
+    # Langkah 2: Konversi ke array numpy
+    img_array = np.array(image)
+
+    # Langkah 3: Grayscale + threshold — SAMA dengan Tahap 1 (threshold=240)
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+
+    # Langkah 4: Temukan kontur → bounding box → CROP — SAMA dengan Tahap 1
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        x, y, w, h = cv2.boundingRect(np.concatenate(contours))
+        margin = 10
+        x = max(0, x - margin)
+        y = max(0, y - margin)
+        w = min(img_array.shape[1] - x, w + 2 * margin)
+        h = min(img_array.shape[0] - y, h + 2 * margin)
+        img_array = img_array[y:y+h, x:x+w]
+
+    # Langkah 5: thumbnail (pertahankan rasio) + tempel di TENGAH — SAMA dengan Tahap 1
+    img_pil = Image.fromarray(img_array)
+    img_pil.thumbnail(target_size, Image.Resampling.LANCZOS)
+    canvas = Image.new('RGB', target_size, (255, 255, 255))
+    offset = (
+        (target_size[0] - img_pil.size[0]) // 2,
+        (target_size[1] - img_pil.size[1]) // 2
+    )
+    canvas.paste(img_pil, offset)
+
+    # Langkah 6: [0,255] → MobileNetV2 preprocess → [-1,1]
+    img_out = np.array(canvas).astype(np.float32)
+    img_out = np.expand_dims(img_out, axis=0)
+    return tf.keras.applications.mobilenet_v2.preprocess_input(img_out)
+
+
+def prediksi_top3(model, image, idx_to_name):
+    """Prediksi 3 tanda tangan teratas beserta skor kepercayaan"""
+    img_preprocessed = preprocess_tanda_tangan(image)
     predictions = model.predict(img_preprocessed, verbose=0)[0]
-    
-    # Get top-3 indices
     top3_idx = np.argsort(predictions)[-3:][::-1]
-    
-    # Create results
-    results = []
-    for rank, idx in enumerate(top3_idx, 1):
-        name = idx_to_name[idx]
-        confidence = float(predictions[idx])
-        results.append({
-            'rank': rank,
-            'name': name,
-            'confidence': confidence
-        })
-    
-    return results
 
-def create_confidence_bar_chart(predictions):
-    """Create horizontal bar chart for top-3 predictions"""
-    names = [p['name'] for p in predictions]
-    confidences = [p['confidence'] * 100 for p in predictions]
-    ranks = [f"#{p['rank']}" for p in predictions]
-    
-    # Color mapping
-    colors = ['#10B981', '#3B82F6', '#9CA3AF']
-    
+    hasil = []
+    for peringkat, idx in enumerate(top3_idx, 1):
+        nama = idx_to_name[idx]
+        kepercayaan = float(predictions[idx])
+        hasil.append({
+            'peringkat': peringkat,
+            'nama': nama,
+            'kepercayaan': kepercayaan
+        })
+
+    return hasil
+
+
+def buat_grafik_kepercayaan(prediksi):
+    """Buat grafik batang horizontal untuk 3 prediksi teratas"""
+    nama = [p['nama'] for p in prediksi]
+    nilai = [p['kepercayaan'] * 100 for p in prediksi]
+    peringkat = [f"#{p['peringkat']}" for p in prediksi]
+
+    warna = ['#10B981', '#3B82F6', '#9CA3AF']
+
     fig = go.Figure(data=[
         go.Bar(
-            y=ranks,
-            x=confidences,
+            y=peringkat,
+            x=nilai,
             orientation='h',
-            text=[f"{c:.2f}%" for c in confidences],
+            text=[f"{c:.2f}%" for c in nilai],
             textposition='outside',
-            marker=dict(color=colors),
-            hovertemplate='<b>%{y}</b>: %{customdata}<br>Confidence: %{x:.2f}%<extra></extra>',
-            customdata=names
+            marker=dict(color=warna),
+            hovertemplate='<b>%{y}</b>: %{customdata}<br>Kepercayaan: %{x:.2f}%<extra></extra>',
+            customdata=nama
         )
     ])
-    
+
     fig.update_layout(
-        title="Top-3 Predictions",
-        xaxis_title="Confidence (%)",
-        yaxis_title="Rank",
+        title="3 Prediksi Teratas",
+        xaxis_title="Kepercayaan (%)",
+        yaxis_title="Peringkat",
         height=300,
         showlegend=False,
         xaxis=dict(range=[0, 100]),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
     )
-    
+
     return fig
 
-def save_prediction_history(predictions, image_name):
-    """Save prediction to session state history"""
-    if 'prediction_history' not in st.session_state:
-        st.session_state.prediction_history = []
-    
-    history_entry = {
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'image_name': image_name,
-        'predictions': predictions
-    }
-    
-    st.session_state.prediction_history.append(history_entry)
 
-def get_confidence_color(confidence):
-    """Get color class based on confidence level"""
-    if confidence >= 0.7:
+def simpan_riwayat(prediksi, nama_gambar):
+    """Simpan prediksi ke session state"""
+    if 'riwayat_prediksi' not in st.session_state:
+        st.session_state.riwayat_prediksi = []
+
+    entri = {
+        'waktu': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'nama_gambar': nama_gambar,
+        'prediksi': prediksi
+    }
+
+    st.session_state.riwayat_prediksi.append(entri)
+
+
+def warna_kepercayaan(kepercayaan):
+    """Tentukan kelas warna berdasarkan tingkat kepercayaan"""
+    if kepercayaan >= 0.7:
         return "confidence-high"
-    elif confidence >= 0.4:
+    elif kepercayaan >= 0.4:
         return "confidence-medium"
     else:
         return "confidence-low"
 
-def export_predictions_to_csv(history):
-    """Export prediction history to CSV"""
-    data = []
-    for entry in history:
-        for pred in entry['predictions']:
-            data.append({
-                'Timestamp': entry['timestamp'],
-                'Image': entry['image_name'],
-                'Rank': pred['rank'],
-                'Name': pred['name'],
-                'Confidence': f"{pred['confidence']*100:.2f}%"
-            })
-    
-    df = pd.DataFrame(data)
-    return df
 
-# ==================== MAIN APP ====================
+def ekspor_ke_csv(riwayat):
+    """Ekspor riwayat prediksi ke CSV"""
+    data = []
+    for entri in riwayat:
+        for pred in entri['prediksi']:
+            data.append({
+                'Waktu': entri['waktu'],
+                'Gambar': entri['nama_gambar'],
+                'Peringkat': pred['peringkat'],
+                'Nama': pred['nama'],
+                'Kepercayaan': f"{pred['kepercayaan']*100:.2f}%"
+            })
+
+    return pd.DataFrame(data)
+
+
+# ==================== APLIKASI UTAMA ====================
 
 def main():
     # Header
-    st.markdown('<h1 class="main-header">🖊️ BSI Signature Detection System</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">AI-Powered Signature Recognition dengan MobileNetV2</p>', unsafe_allow_html=True)
-    
+    st.markdown('<h1 class="main-header">🖊️ B Sign Verification System</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Presented to : BSI Decode the Future with Al Innovation Challenge 2026</p>', unsafe_allow_html=True)
+
     # Sidebar
     with st.sidebar:
-        st.image("picture/logo.png", use_container_width=True)
-
+        st.image("https://via.placeholder.com/300x100/1E3A8A/FFFFFF?text=BSI+Logo", use_container_width=True)
         st.markdown("---")
-        
-        # Navigation
-        page = st.radio(
-            "Navigation",
-            ["🏠 Home & Predict", "📊 Statistics & History", "🔄 Retrain Model", "ℹ️ About"],
+
+        # Navigasi
+        halaman = st.radio(
+            "Navigasi",
+            ["🏠 Beranda", "📊 Statistik", "🔄 Latih Ulang Model", "ℹ️ Tentang"],
             label_visibility="collapsed"
         )
-        
+
         st.markdown("---")
-        
-        # Model info
-        st.markdown("### 📋 Model Info")
+
+        # Info model
+        st.markdown("### 📋 Info Model")
         st.info("""
-        **Architecture:** MobileNetV2  
-        **Classes:** 34 signatures  
-        **Accuracy:** 76.47%  
-        **Top-3 Acc:** 92.65%
+        **Arsitektur:** MobileNetV2  
+        **Kelas:** 34 tanda tangan  
+        **Akurasi:** 76,47%  
+        **Top-3 Akurasi:** 92,65%
         """)
-        
+
         st.markdown("---")
         st.markdown("**🏆 BSI Innovation Idea 2024**")
-        st.markdown("*Powered by TensorFlow & Streamlit*")
-    
-    # ==================== PAGE: HOME & PREDICT ====================
-    if page == "🏠 Home & Predict":
-        st.markdown("## 📤 Upload Signature untuk Prediksi")
-        
-        # Tab selection
-        tab1, tab2 = st.tabs(["📄 Single Upload", "📦 Batch Upload"])
-        
-        # ===== SINGLE UPLOAD =====
+        st.markdown("*Didukung oleh TensorFlow & Streamlit*")
+
+    # ==================== HALAMAN: BERANDA & PREDIKSI ====================
+    if halaman == "🏠 Beranda & Prediksi":
+        st.markdown("## 📤 Unggah Tanda Tangan untuk Prediksi")
+
+        tab1, tab2 = st.tabs(["📄 Unggah Tunggal", "📦 Unggah Batch"])
+
+        # ===== UNGGAH TUNGGAL =====
         with tab1:
             col1, col2 = st.columns([1, 1])
-            
+
             with col1:
-                st.markdown("### Upload Image")
-                uploaded_file = st.file_uploader(
-                    "Choose a signature image",
+                st.markdown("### Unggah Gambar")
+                berkas_diunggah = st.file_uploader(
+                    "Pilih gambar tanda tangan",
                     type=['png', 'jpg', 'jpeg'],
-                    help="Upload PNG, JPG, or JPEG format"
+                    help="Unggah format PNG, JPG, atau JPEG"
                 )
-                
-                if uploaded_file is not None:
-                    # Display uploaded image
-                    image = Image.open(uploaded_file)
-                    st.image(image, caption="Uploaded Signature", use_container_width=True)
 
-                    if st.button("🔄 Reset", key="reset_single"):
-                         if "current_predictions" in st.session_state:
-                             del st.session_state["current_predictions"]
-                         st.rerun()
+                if berkas_diunggah is not None:
+                    image = Image.open(berkas_diunggah)
+                    st.image(image, caption="Tanda Tangan yang Diunggah", use_container_width=True)
 
-                    
-                    # Predict button
-                    if st.button("🔍 Predict Signature", key="predict_single"):
-                        with st.spinner("Analyzing signature..."):
-                            # Load model
+                    if st.button("🔍 Prediksi Tanda Tangan", key="prediksi_tunggal"):
+                        with st.spinner("Menganalisis tanda tangan..."):
                             MODEL_PATH = "signature_model_final.keras"
                             LABEL_MAP_PATH = "label_map.json"
-                            
-                            # Check if files exist
+
                             if not os.path.exists(MODEL_PATH):
-                                st.error(f"❌ Model file not found: {MODEL_PATH}")
-                                st.info("Please upload the model file to the same directory as this app.")
+                                st.error(f"❌ File model tidak ditemukan: {MODEL_PATH}")
+                                st.info("Letakkan file model di direktori yang sama dengan aplikasi ini.")
                             elif not os.path.exists(LABEL_MAP_PATH):
-                                st.error(f"❌ Label map file not found: {LABEL_MAP_PATH}")
+                                st.error(f"❌ File label map tidak ditemukan: {LABEL_MAP_PATH}")
                             else:
-                                model, idx_to_name = load_model_and_mappings(MODEL_PATH, LABEL_MAP_PATH)
-                                
+                                model, idx_to_name = muat_model_dan_mapping(MODEL_PATH, LABEL_MAP_PATH)
+
                                 if model is not None:
-                                    # Predict
-                                    predictions = predict_signature_top3(model, image, idx_to_name)
-                                    
-                                    # Save to history
-                                    save_prediction_history(predictions, uploaded_file.name)
-                                    
-                                    # Store in session state for display
-                                    st.session_state.current_predictions = predictions
-            
+                                    prediksi = prediksi_top3(model, image, idx_to_name)
+                                    simpan_riwayat(prediksi, berkas_diunggah.name)
+                                    st.session_state.prediksi_sekarang = prediksi
+
             with col2:
-                st.markdown("### 🎯 Prediction Results")
-                
-                # Display predictions if available
-                if 'current_predictions' in st.session_state:
-                    predictions = st.session_state.current_predictions
-                    
-                    # Top prediction highlight
-                    top_pred = predictions[0]
-                    st.success(f"**Most Likely:** {top_pred['name']}")
-                    st.markdown(f"**Confidence:** {top_pred['confidence']*100:.2f}%")
-                    
+                st.markdown("### 🎯 Hasil Prediksi")
+
+                if 'prediksi_sekarang' in st.session_state:
+                    prediksi = st.session_state.prediksi_sekarang
+
+                    # Sorot prediksi teratas
+                    top_pred = prediksi[0]
+                    st.success(f"**Paling Mungkin:** {top_pred['nama']}")
+                    st.markdown(f"**Kepercayaan:** {top_pred['kepercayaan']*100:.2f}%")
+
                     st.markdown("---")
-                    
-                    # All top-3 predictions
-                    st.markdown("#### 📊 Top-3 Predictions")
-                    
-                    for pred in predictions:
-                        rank_emoji = "🥇" if pred['rank'] == 1 else "🥈" if pred['rank'] == 2 else "🥉"
-                        conf_class = get_confidence_color(pred['confidence'])
-                        
+                    st.markdown("#### 📊 3 Prediksi Teratas")
+
+                    for pred in prediksi:
+                        emoji_peringkat = "🥇" if pred['peringkat'] == 1 else "🥈" if pred['peringkat'] == 2 else "🥉"
+                        kelas_warna = warna_kepercayaan(pred['kepercayaan'])
+
                         with st.container():
                             col_rank, col_name, col_conf = st.columns([1, 3, 2])
                             with col_rank:
-                                st.markdown(f"### {rank_emoji}")
+                                st.markdown(f"### {emoji_peringkat}")
                             with col_name:
-                                st.markdown(f"**{pred['name']}**")
+                                st.markdown(f"**{pred['nama']}**")
                             with col_conf:
-                                st.markdown(f"<span class='{conf_class}'>{pred['confidence']*100:.2f}%</span>", unsafe_allow_html=True)
-                            
-                            st.progress(pred['confidence'])
+                                st.markdown(
+                                    f"<span class='{kelas_warna}'>{pred['kepercayaan']*100:.2f}%</span>",
+                                    unsafe_allow_html=True
+                                )
+                            st.progress(pred['kepercayaan'])
                             st.markdown("---")
-                    
-                    # Confidence chart
-                    fig = create_confidence_bar_chart(predictions)
+
+                    # Grafik kepercayaan
+                    fig = buat_grafik_kepercayaan(prediksi)
                     st.plotly_chart(fig, use_container_width=True)
-                    
+
                 else:
-                    st.info("👆 Upload an image and click 'Predict Signature' to see results")
-        
-        # ===== BATCH UPLOAD =====
+                    st.info("👆 Unggah gambar lalu klik 'Prediksi Tanda Tangan' untuk melihat hasil")
+
+        # ===== UNGGAH BATCH =====
         with tab2:
-            st.markdown("### 📦 Batch Upload")
-            st.info("Upload multiple signature images at once for batch prediction")
-            
-            uploaded_files = st.file_uploader(
-                "Choose multiple signature images",
+            st.markdown("### 📦 Unggah Batch")
+            st.info("Unggah beberapa gambar tanda tangan sekaligus untuk prediksi massal")
+
+            berkas_batch = st.file_uploader(
+                "Pilih beberapa gambar tanda tangan",
                 type=['png', 'jpg', 'jpeg'],
                 accept_multiple_files=True,
-                help="Upload multiple PNG, JPG, or JPEG files"
+                help="Unggah beberapa file PNG, JPG, atau JPEG"
             )
-            
-            if uploaded_files:
-                st.success(f"✅ {len(uploaded_files)} images uploaded")
-                
-                if st.button("🔍 Predict All", key="predict_batch"):
+
+            if berkas_batch:
+                st.success(f"✅ {len(berkas_batch)} gambar diunggah")
+
+                if st.button("🔍 Prediksi Semua", key="prediksi_batch"):
                     MODEL_PATH = "signature_model_final.keras"
                     LABEL_MAP_PATH = "label_map.json"
-                    
+
                     if os.path.exists(MODEL_PATH) and os.path.exists(LABEL_MAP_PATH):
-                        model, idx_to_name = load_model_and_mappings(MODEL_PATH, LABEL_MAP_PATH)
-                        
+                        model, idx_to_name = muat_model_dan_mapping(MODEL_PATH, LABEL_MAP_PATH)
+
                         if model is not None:
-                            # Progress bar
                             progress_bar = st.progress(0)
                             status_text = st.empty()
-                            
-                            batch_results = []
-                            
-                            for idx, uploaded_file in enumerate(uploaded_files):
-                                # Update progress
-                                progress = (idx + 1) / len(uploaded_files)
-                                progress_bar.progress(progress)
-                                status_text.text(f"Processing {idx+1}/{len(uploaded_files)}: {uploaded_file.name}")
-                                
-                                # Predict
-                                image = Image.open(uploaded_file)
-                                predictions = predict_signature_top3(model, image, idx_to_name)
-                                
-                                batch_results.append({
-                                    'filename': uploaded_file.name,
-                                    'image': image,
-                                    'predictions': predictions
+                            hasil_batch = []
+
+                            for idx, berkas in enumerate(berkas_batch):
+                                progres = (idx + 1) / len(berkas_batch)
+                                progress_bar.progress(progres)
+                                status_text.text(f"Memproses {idx+1}/{len(berkas_batch)}: {berkas.name}")
+
+                                image = Image.open(berkas)
+                                prediksi = prediksi_top3(model, image, idx_to_name)
+
+                                hasil_batch.append({
+                                    'nama_file': berkas.name,
+                                    'gambar': image,
+                                    'prediksi': prediksi
                                 })
-                                
-                                # Save to history
-                                save_prediction_history(predictions, uploaded_file.name)
-                            
+
+                                simpan_riwayat(prediksi, berkas.name)
+
                             progress_bar.empty()
                             status_text.empty()
-                            
-                            # Display results
-                            st.success("✅ Batch prediction completed!")
-                            
-                            st.markdown("### 📊 Batch Results")
-                            
-                            # Create dataframe
-                            df_data = []
-                            for result in batch_results:
-                                top_pred = result['predictions'][0]
-                                df_data.append({
-                                    'Filename': result['filename'],
-                                    'Top Prediction': top_pred['name'],
-                                    'Confidence': f"{top_pred['confidence']*100:.2f}%",
-                                    'Rank 2': result['predictions'][1]['name'],
-                                    'Rank 3': result['predictions'][2]['name']
+
+                            st.success("✅ Prediksi batch selesai!")
+                            st.markdown("### 📊 Hasil Batch")
+
+                            # Buat dataframe hasil
+                            data_df = []
+                            for hasil in hasil_batch:
+                                top = hasil['prediksi'][0]
+                                data_df.append({
+                                    'Nama File': hasil['nama_file'],
+                                    'Prediksi Teratas': top['nama'],
+                                    'Kepercayaan': f"{top['kepercayaan']*100:.2f}%",
+                                    'Peringkat 2': hasil['prediksi'][1]['nama'],
+                                    'Peringkat 3': hasil['prediksi'][2]['nama']
                                 })
-                            
-                            df = pd.DataFrame(df_data)
+
+                            df = pd.DataFrame(data_df)
                             st.dataframe(df, use_container_width=True)
-                            
-                            # Download results
+
+                            # Unduh hasil
                             csv = df.to_csv(index=False)
                             st.download_button(
-                                label="📥 Download Results (CSV)",
+                                label="📥 Unduh Hasil (CSV)",
                                 data=csv,
-                                file_name=f"batch_predictions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                file_name=f"prediksi_batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                                 mime="text/csv"
                             )
-                            
-                            # Show detailed view
-                            st.markdown("### 🔍 Detailed View")
-                            for result in batch_results:
-                                with st.expander(f"📄 {result['filename']}"):
+
+                            # Tampilan detail
+                            st.markdown("### 🔍 Tampilan Detail")
+                            for hasil in hasil_batch:
+                                with st.expander(f"📄 {hasil['nama_file']}"):
                                     col1, col2 = st.columns([1, 2])
                                     with col1:
-                                        st.image(result['image'], use_container_width=True)
+                                        st.image(hasil['gambar'], use_container_width=True)
                                     with col2:
-                                        for pred in result['predictions']:
-                                            st.markdown(f"**#{pred['rank']}: {pred['name']}** - {pred['confidence']*100:.2f}%")
+                                        for pred in hasil['prediksi']:
+                                            st.markdown(f"**#{pred['peringkat']}: {pred['nama']}** — {pred['kepercayaan']*100:.2f}%")
                     else:
-                        st.error("❌ Model or label map file not found")
-    
-    # ==================== PAGE: STATISTICS & HISTORY ====================
-    elif page == "📊 Statistics & History":
-        st.markdown("## 📊 Prediction Statistics & History")
-        
-        if 'prediction_history' not in st.session_state or len(st.session_state.prediction_history) == 0:
-            st.info("📭 No predictions yet. Upload signatures in the Home page to build history.")
+                        st.error("❌ File model atau label map tidak ditemukan")
+
+    # ==================== HALAMAN: STATISTIK & RIWAYAT ====================
+    elif halaman == "📊 Statistik & Riwayat":
+        st.markdown("## 📊 Statistik & Riwayat Prediksi")
+
+        if 'riwayat_prediksi' not in st.session_state or len(st.session_state.riwayat_prediksi) == 0:
+            st.info("📭 Belum ada prediksi. Unggah tanda tangan di halaman Beranda untuk mulai.")
         else:
-            history = st.session_state.prediction_history
-            
-            # Summary metrics
-            st.markdown("### 📈 Summary")
+            riwayat = st.session_state.riwayat_prediksi
+
+            # Ringkasan metrik
+            st.markdown("### 📈 Ringkasan")
             col1, col2, col3, col4 = st.columns(4)
-            
+
             with col1:
-                st.metric("Total Predictions", len(history))
-            
+                st.metric("Total Prediksi", len(riwayat))
             with col2:
-                # Count unique signatures predicted
-                unique_sigs = set([h['predictions'][0]['name'] for h in history])
-                st.metric("Unique Signatures", len(unique_sigs))
-            
+                nama_unik = set([h['prediksi'][0]['nama'] for h in riwayat])
+                st.metric("Tanda Tangan Unik", len(nama_unik))
             with col3:
-                # Average confidence
-                avg_conf = np.mean([h['predictions'][0]['confidence'] for h in history])
-                st.metric("Avg Confidence", f"{avg_conf*100:.1f}%")
-            
+                rata_kepercayaan = np.mean([h['prediksi'][0]['kepercayaan'] for h in riwayat])
+                st.metric("Rata-rata Kepercayaan", f"{rata_kepercayaan*100:.1f}%")
             with col4:
-                # High confidence predictions (>70%)
-                high_conf = sum([1 for h in history if h['predictions'][0]['confidence'] >= 0.7])
-                st.metric("High Confidence", f"{high_conf}/{len(history)}")
-            
+                tinggi = sum([1 for h in riwayat if h['prediksi'][0]['kepercayaan'] >= 0.7])
+                st.metric("Kepercayaan Tinggi", f"{tinggi}/{len(riwayat)}")
+
             st.markdown("---")
-            
-            # Visualizations
+
+            # Visualisasi
             col1, col2 = st.columns(2)
-            
+
             with col1:
-                st.markdown("### 📊 Top Predicted Signatures")
-                # Count frequency
-                pred_counts = {}
-                for h in history:
-                    name = h['predictions'][0]['name']
-                    pred_counts[name] = pred_counts.get(name, 0) + 1
-                
-                # Create bar chart
-                df_counts = pd.DataFrame(list(pred_counts.items()), columns=['Name', 'Count'])
-                df_counts = df_counts.sort_values('Count', ascending=False).head(10)
-                
-                fig = px.bar(df_counts, x='Name', y='Count', 
-                           title="Top 10 Most Predicted Signatures",
-                           color='Count',
-                           color_continuous_scale='Blues')
+                st.markdown("### 📊 Tanda Tangan Paling Sering Diprediksi")
+                jumlah_prediksi = {}
+                for h in riwayat:
+                    nama = h['prediksi'][0]['nama']
+                    jumlah_prediksi[nama] = jumlah_prediksi.get(nama, 0) + 1
+
+                df_jumlah = pd.DataFrame(list(jumlah_prediksi.items()), columns=['Nama', 'Jumlah'])
+                df_jumlah = df_jumlah.sort_values('Jumlah', ascending=False).head(10)
+
+                fig = px.bar(df_jumlah, x='Nama', y='Jumlah',
+                             title="10 Tanda Tangan Paling Sering",
+                             color='Jumlah',
+                             color_continuous_scale='Blues')
                 st.plotly_chart(fig, use_container_width=True)
-            
+
             with col2:
-                st.markdown("### 📈 Confidence Distribution")
-                confidences = [h['predictions'][0]['confidence'] * 100 for h in history]
-                
-                fig = go.Figure(data=[go.Histogram(x=confidences, nbinsx=20,
-                                                   marker_color='#3B82F6')])
+                st.markdown("### 📈 Distribusi Kepercayaan")
+                nilai_kepercayaan = [h['prediksi'][0]['kepercayaan'] * 100 for h in riwayat]
+
+                fig = go.Figure(data=[go.Histogram(
+                    x=nilai_kepercayaan, nbinsx=20, marker_color='#3B82F6'
+                )])
                 fig.update_layout(
-                    title="Distribution of Top Prediction Confidence",
-                    xaxis_title="Confidence (%)",
-                    yaxis_title="Frequency",
+                    title="Distribusi Kepercayaan Prediksi Teratas",
+                    xaxis_title="Kepercayaan (%)",
+                    yaxis_title="Frekuensi",
                     showlegend=False
                 )
                 st.plotly_chart(fig, use_container_width=True)
-            
-            # Prediction history table
-            st.markdown("### 📜 Prediction History")
-            
-            # Create detailed dataframe
-            history_data = []
-            for h in history:
-                history_data.append({
-                    'Timestamp': h['timestamp'],
-                    'Image': h['image_name'],
-                    'Top Prediction': h['predictions'][0]['name'],
-                    'Confidence': f"{h['predictions'][0]['confidence']*100:.2f}%",
-                    '2nd': h['predictions'][1]['name'],
-                    '3rd': h['predictions'][2]['name']
+
+            # Tabel riwayat
+            st.markdown("### 📜 Riwayat Prediksi")
+
+            data_riwayat = []
+            for h in riwayat:
+                data_riwayat.append({
+                    'Waktu': h['waktu'],
+                    'Gambar': h['nama_gambar'],
+                    'Prediksi Teratas': h['prediksi'][0]['nama'],
+                    'Kepercayaan': f"{h['prediksi'][0]['kepercayaan']*100:.2f}%",
+                    'Peringkat 2': h['prediksi'][1]['nama'],
+                    'Peringkat 3': h['prediksi'][2]['nama']
                 })
-            
-            df_history = pd.DataFrame(history_data)
-            st.dataframe(df_history, use_container_width=True)
-            
-            # Export options
+
+            df_riwayat = pd.DataFrame(data_riwayat)
+            st.dataframe(df_riwayat, use_container_width=True)
+
+            # Opsi ekspor
             col1, col2, col3 = st.columns(3)
-            
+
             with col1:
-                # Export to CSV
-                csv = export_predictions_to_csv(history).to_csv(index=False)
+                csv = ekspor_ke_csv(riwayat).to_csv(index=False)
                 st.download_button(
-                    label="📥 Export to CSV",
+                    label="📥 Ekspor ke CSV",
                     data=csv,
-                    file_name=f"prediction_history_{datetime.now().strftime('%Y%m%d')}.csv",
+                    file_name=f"riwayat_prediksi_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
                 )
-            
             with col2:
-                # Clear history
-                if st.button("🗑️ Clear History"):
-                    st.session_state.prediction_history = []
+                if st.button("🗑️ Hapus Riwayat"):
+                    st.session_state.riwayat_prediksi = []
                     st.rerun()
-            
             with col3:
-                st.info(f"Total records: {len(history)}")
-    
-    # ==================== PAGE: RETRAIN MODEL ====================
-    elif page == "🔄 Retrain Model":
-        st.markdown("## 🔄 Upload New Data & Retrain Model")
-        
-        st.warning("⚠️ **Advanced Feature:** This will retrain the model with new data. Make sure you have the necessary computational resources.")
-        
-        st.markdown("### 📤 Upload New Training Data")
+                st.info(f"Total data: {len(riwayat)}")
+
+    # ==================== HALAMAN: LATIH ULANG MODEL ====================
+    elif halaman == "🔄 Latih Ulang Model":
+        st.markdown("## 🔄 Unggah Data Baru & Latih Ulang Model")
+
+        st.warning("⚠️ **Fitur Lanjutan:** Ini akan melatih ulang model dengan data baru. Pastikan Anda memiliki sumber daya komputasi yang memadai.")
+
+        st.markdown("### 📤 Unggah Data Pelatihan Baru")
         st.info("""
-        **Instructions:**
-        1. Prepare a ZIP file containing folders for each person
-        2. Each folder should contain signature images of that person
-        3. Folder name = Person's name
-        4. Minimum 3-4 images per person recommended
-        
-        **Example structure:**
+        **Petunjuk:**
+        1. Siapkan file ZIP berisi folder untuk setiap orang
+        2. Setiap folder berisi gambar tanda tangan orang tersebut
+        3. Nama folder = Nama orang
+        4. Minimal 3–4 gambar per orang direkomendasikan
+
+        **Contoh struktur:**
         ```
-        signatures.zip
-        ├── John Doe/
-        │   ├── sig1.png
-        │   ├── sig2.png
-        │   └── sig3.png
-        ├── Jane Smith/
-        │   ├── sig1.png
-        │   └── sig2.png
+        tanda_tangan.zip
+        ├── Budi Santoso/
+        │   ├── ttd1.png
+        │   ├── ttd2.png
+        │   └── ttd3.png
+        ├── Siti Rahayu/
+        │   ├── ttd1.png
+        │   └── ttd2.png
         └── ...
         ```
         """)
-        
-        uploaded_zip = st.file_uploader("Upload ZIP file with new signatures", type=['zip'])
-        
-        if uploaded_zip is not None:
-            st.success(f"✅ ZIP file uploaded: {uploaded_zip.name}")
-            
-            # Extract and preview
-            with st.expander("👁️ Preview uploaded data"):
+
+        zip_diunggah = st.file_uploader("Unggah file ZIP dengan tanda tangan baru", type=['zip'])
+
+        if zip_diunggah is not None:
+            st.success(f"✅ File ZIP diunggah: {zip_diunggah.name}")
+
+            with st.expander("👁️ Pratinjau data yang diunggah"):
                 try:
-                    with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
-                        file_list = zip_ref.namelist()
-                        
-                        # Count folders and files
-                        folders = set([f.split('/')[0] for f in file_list if '/' in f])
-                        
-                        st.info(f"**Found {len(folders)} people/folders**")
-                        
-                        # Show folder structure
-                        folder_stats = {}
-                        for folder in folders:
-                            files = [f for f in file_list if f.startswith(folder + '/') and not f.endswith('/')]
-                            folder_stats[folder] = len(files)
-                        
-                        df_preview = pd.DataFrame(list(folder_stats.items()), 
-                                                 columns=['Person', 'Number of Images'])
-                        st.dataframe(df_preview, use_container_width=True)
-                        
+                    with zipfile.ZipFile(zip_diunggah, 'r') as zip_ref:
+                        daftar_file = zip_ref.namelist()
+                        folder = set([f.split('/')[0] for f in daftar_file if '/' in f])
+
+                        st.info(f"**Ditemukan {len(folder)} orang/folder**")
+
+                        statistik_folder = {}
+                        for fo in folder:
+                            files = [f for f in daftar_file if f.startswith(fo + '/') and not f.endswith('/')]
+                            statistik_folder[fo] = len(files)
+
+                        df_pratinjau = pd.DataFrame(
+                            list(statistik_folder.items()),
+                            columns=['Nama', 'Jumlah Gambar']
+                        )
+                        st.dataframe(df_pratinjau, use_container_width=True)
+
                 except Exception as e:
-                    st.error(f"Error reading ZIP file: {str(e)}")
-            
+                    st.error(f"Gagal membaca file ZIP: {str(e)}")
+
             st.markdown("---")
-            
-            # Retrain configuration
-            st.markdown("### ⚙️ Retrain Configuration")
-            
+
+            # Konfigurasi pelatihan ulang
+            st.markdown("### ⚙️ Konfigurasi Pelatihan Ulang")
+
             col1, col2 = st.columns(2)
-            
+
             with col1:
-                epochs = st.slider("Training Epochs", 10, 100, 30)
-                batch_size = st.selectbox("Batch Size", [8, 16, 32], index=1)
-            
+                epochs = st.slider("Jumlah Epoch", 10, 100, 30)
+                batch_size = st.selectbox("Ukuran Batch", [8, 16, 32], index=1)
             with col2:
                 learning_rate = st.select_slider(
                     "Learning Rate",
@@ -665,129 +631,125 @@ def main():
                     value=1e-3,
                     format_func=lambda x: f"{x:.0e}"
                 )
-                use_augmentation = st.checkbox("Use Data Augmentation", value=True)
-            
+                augmentasi = st.checkbox("Gunakan Augmentasi Data", value=True)
+
             st.markdown("---")
-            
-            # Retrain button
-            if st.button("🚀 Start Retraining", type="primary"):
-                st.warning("🚧 **Retraining feature is a placeholder.** In production, this would:")
+
+            if st.button("🚀 Mulai Pelatihan Ulang", type="primary"):
+                st.warning("🚧 **Fitur ini bersifat simulasi.** Dalam produksi, proses ini akan:")
                 st.markdown("""
-                1. Extract and preprocess uploaded data
-                2. Merge with existing training data
-                3. Retrain the model with configured parameters
-                4. Save new model weights
-                5. Update label mappings
-                
-                **This requires:**
-                - Google Colab or cloud GPU
-                - Original training pipeline
-                - Proper data validation
-                
-                **Recommendation:** Use the Tahap 2 notebook in Google Colab for retraining with new data.
+                1. Mengekstrak dan memproses data yang diunggah
+                2. Menggabungkan dengan data pelatihan sebelumnya
+                3. Melatih ulang model dengan parameter yang dikonfigurasi
+                4. Menyimpan bobot model baru
+                5. Memperbarui pemetaan label
+
+                **Dibutuhkan:**
+                - Google Colab atau GPU cloud
+                - Pipeline pelatihan asli (Notebook Tahap 2)
+                - Validasi data yang tepat
+
+                **Rekomendasi:** Gunakan notebook Tahap 2 di Google Colab untuk melatih ulang dengan data baru.
                 """)
-                
-                # Placeholder progress
-                with st.spinner("Simulating retrain process..."):
+
+                with st.spinner("Mensimulasikan proses pelatihan ulang..."):
                     import time
                     progress_bar = st.progress(0)
                     for i in range(100):
                         time.sleep(0.02)
                         progress_bar.progress(i + 1)
-                    
-                    st.success("✅ Retraining simulation completed! (This is a demo)")
-    
-    # ==================== PAGE: ABOUT ====================
-    elif page == "ℹ️ About":
-        st.markdown("## ℹ️ About This System")
-        
+
+                    st.success("✅ Simulasi pelatihan ulang selesai! (Ini hanya demo)")
+
+    # ==================== HALAMAN: TENTANG ====================
+    elif halaman == "ℹ️ Tentang":
+        st.markdown("## ℹ️ Tentang Sistem Ini")
+
         col1, col2 = st.columns([2, 1])
-        
+
         with col1:
             st.markdown("""
-            ### 🖊️ BSI Signature Detection System
-            
+            ### 🖊️ Sistem Deteksi Tanda Tangan BSI
+
             Sistem pengenalan tanda tangan berbasis AI menggunakan Deep Learning untuk mengidentifikasi
             pemilik tanda tangan dari 34 nasabah BSI.
-            
-            #### 🎯 Features
-            - **Single & Batch Upload**: Upload satu atau banyak gambar sekaligus
-            - **Top-3 Predictions**: Menampilkan 3 prediksi teratas dengan confidence score
-            - **Real-time Processing**: Prediksi instan dengan model yang sudah trained
-            - **Prediction History**: Track semua prediksi yang pernah dilakukan
-            - **Statistics Dashboard**: Visualisasi performa dan distribusi prediksi
-            - **Export Results**: Download hasil dalam format CSV
-            - **Retrain Capability**: Upload data baru dan retrain model
-            
-            #### 🏗️ Architecture
-            - **Base Model**: MobileNetV2 (Transfer Learning from ImageNet)
-            - **Input Size**: 224 x 224 x 3 (RGB)
-            - **Output**: 34 classes (signatures)
+
+            #### 🎯 Fitur Utama
+            - **Upload Tunggal & Batch**: Unggah satu atau banyak gambar sekaligus
+            - **3 Prediksi Teratas**: Menampilkan 3 kandidat tanda tangan dengan skor kepercayaan
+            - **Pemrosesan Real-time**: Prediksi instan menggunakan model terlatih
+            - **Riwayat Prediksi**: Lacak semua prediksi yang pernah dilakukan
+            - **Dasbor Statistik**: Visualisasi performa dan distribusi prediksi
+            - **Ekspor Hasil**: Unduh hasil dalam format CSV
+            - **Latih Ulang Model**: Unggah data baru dan latih ulang model
+
+            #### 🏗️ Arsitektur Model
+            - **Model Dasar**: MobileNetV2 (Transfer Learning dari ImageNet)
+            - **Ukuran Input**: 224 × 224 × 3 (RGB)
+            - **Output**: 34 kelas (tanda tangan)
             - **Framework**: TensorFlow 2.x / Keras
-            
-            #### 📊 Performance Metrics
-            - **Test Accuracy**: 76.47%
-            - **Top-3 Accuracy**: 92.65%
-            - **Validation Accuracy**: 97.06%
-            
-            #### 🔧 Technical Stack
-            - **Backend**: TensorFlow, Keras, NumPy
+
+            #### 📊 Metrik Performa
+            - **Akurasi Uji**: 76,47%
+            - **Top-3 Akurasi**: 92,65%
+            - **Akurasi Validasi**: 97,06%
+
+            #### 🔧 Tumpukan Teknologi
+            - **Backend**: TensorFlow, Keras, NumPy, OpenCV
             - **Frontend**: Streamlit
-            - **Visualization**: Plotly, Matplotlib
+            - **Visualisasi**: Plotly
             - **Preprocessing**: PIL, OpenCV
-            
-            #### 📖 How It Works
-            1. **Upload**: User mengupload gambar tanda tangan
-            2. **Preprocessing**: Image di-resize dan dinormalisasi
-            3. **Prediction**: Model MobileNetV2 melakukan inference
-            4. **Results**: Menampilkan Top-3 predictions dengan confidence scores
-            
-            #### 🚀 Future Improvements
-            - [ ] Real-time signature verification
-            - [ ] Signature forgery detection
-            - [ ] Multi-model ensemble
-            - [ ] Mobile app integration
-            - [ ] Cloud deployment (AWS/GCP)
+
+            #### 📖 Cara Kerja
+            1. **Unggah**: Pengguna mengunggah gambar tanda tangan
+            2. **Preprocessing**: Gambar dicrop, diubah ukuran, dan dinormalisasi (identik Tahap 1)
+            3. **Prediksi**: Model MobileNetV2 melakukan inferensi
+            4. **Hasil**: Menampilkan 3 prediksi teratas dengan skor kepercayaan
+
+            #### 🚀 Rencana Pengembangan
+            - [ ] Verifikasi tanda tangan secara real-time
+            - [ ] Deteksi pemalsuan tanda tangan
+            - [ ] Ensemble multi-model
+            - [ ] Integrasi aplikasi mobile
+            - [ ] Deployment cloud (AWS/GCP)
             """)
-        
+
         with col2:
-            st.markdown("### 📞 Contact")
+            st.markdown("### 📞 Kontak")
             st.info("""
-            **Project Team**
-            
+            **Tim Proyek**
+
             🏢 Bank Syariah Indonesia  
             📧 Email: contact@bsi.id  
             🌐 Website: www.bsi.co.id
-            
+
             ---
-            
-            **Developer**
-            
-            💻 AI Development Team  
+
+            **Pengembang**
+
+            💻 Tim Pengembangan AI  
             📅 2024
             """)
-            
+
             st.markdown("---")
-            
-            st.markdown("### 📄 Documentation")
+            st.markdown("### 📄 Dokumentasi")
             st.markdown("""
-            - [User Guide](#)
-            - [API Documentation](#)
-            - [Model Training Guide](#)
-            - [Deployment Guide](#)
-            """)
-            
-            st.markdown("---")
-            
-            st.markdown("### 🏆 Competition")
-            st.success("""
-            **BSI Innovation Idea 2024**
-            
-            AI-powered solution for
-            automatic signature recognition
-            and verification.
+            - [Panduan Pengguna](#)
+            - [Dokumentasi API](#)
+            - [Panduan Pelatihan Model](#)
+            - [Panduan Deployment](#)
             """)
 
-# Run app
+            st.markdown("---")
+            st.markdown("### 🏆 Kompetisi")
+            st.success("""
+            **BSI Innovation Idea 2024**
+
+            Solusi berbasis AI untuk pengenalan
+            dan verifikasi tanda tangan otomatis.
+            """)
+
+
+# Jalankan aplikasi
 if __name__ == "__main__":
     main()
