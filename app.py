@@ -273,7 +273,7 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.image("https://via.placeholder.com/300x100/1E3A8A/FFFFFF?text=BSI+Logo", use_container_width=True)
+        st.image("picture/logo.png", use_container_width=True)
         st.markdown("---")
 
         # Navigasi
