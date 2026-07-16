@@ -1,6 +1,6 @@
 # 🖊️ BSI Signature Detection System
 
-AI-powered signature recognition system untuk BSI Innovation Idea 2024. Sistem ini menggunakan Deep Learning (MobileNetV2) untuk mengidentifikasi pemilik tanda tangan dari 34 nasabah BSI.
+AI-powered signature recognition system untuk BSI Innovation Idea 2026. Sistem ini menggunakan Deep Learning (MobileNetV2) untuk mengidentifikasi pemilik tanda tangan dari 34 nasabah BSI.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![TensorFlow](https://img.shields.io/badge/TensorFlow-2.16-orange.svg)
